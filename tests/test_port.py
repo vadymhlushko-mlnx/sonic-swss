@@ -4,6 +4,16 @@ import pytest
 
 from swsscommon import swsscommon
 
+def create_entry(tbl, key, pairs):
+    fvs = swsscommon.FieldValuePairs(pairs)
+    tbl.set(key, fvs)
+
+    # FIXME: better to wait until DB create them
+    time.sleep(1)
+
+def create_entry_pst(db, table, key, pairs):
+    tbl = swsscommon.ProducerStateTable(db, table)
+    create_entry(tbl, key, pairs)
 
 class TestPort(object):
     def test_PortMtu(self, dvs, testlog):
@@ -222,6 +232,111 @@ class TestPort(object):
             if fv[0] == "SAI_PORT_ATTR_SERDES_IPREDRIVER":
                 assert fv[1] == ipre_val_asic
 
+    def test_PortShutdownVlanRifIpv6(self, dvs, testlog):
+        vlan_id = "2"
+        vlan_interface = "Vlan{}".format(vlan_id)
+        interface = "Ethernet0"
+        mac_addr = "52:54:00:25:06:E9"
+        ipv6_addr = "2000:1::1/64"
+
+        dvs.setup_db()
+        dvs.runcmd("sonic-clear fdb all")
+        time.sleep(2)
+
+        # Create vlan
+        dvs.create_vlan(vlan_id)
+        time.sleep(1)
+
+        # Get bvid from vlanid
+        ok, bvid = dvs.get_vlan_oid(dvs.adb, vlan_id)
+        assert ok, bvid
+
+        # Create vlan member, assign ip to vlan
+        dvs.create_vlan_member(vlan_id, interface)
+        dvs.add_ip_address(vlan_interface, ipv6_addr)
+        time.sleep(1)
+
+        # Create a FDB entry in Application DB
+        create_entry_pst(
+            dvs.pdb,
+            "FDB_TABLE", "{}:52-54-00-25-06-E9".format(vlan_interface),
+            [
+                ("port", "{}".format(interface)),
+                ("type", "dynamic"),
+            ]
+        )
+
+        # Get mapping between the interface name and its bridge port_id
+        iface_2_bridge_port_id = dvs.get_map_iface_bridge_port_id(dvs.adb)
+
+        # Check that the FDB entry was inserted into ASIC DB
+        ok, extra = dvs.is_fdb_entry_exists(dvs.adb, "ASIC_STATE:SAI_OBJECT_TYPE_FDB_ENTRY",
+                        [("mac", "{}".format(mac_addr)), ("bvid", bvid)],
+                        [("SAI_FDB_ENTRY_ATTR_TYPE", "SAI_FDB_ENTRY_TYPE_DYNAMIC"),
+                         ("SAI_FDB_ENTRY_ATTR_BRIDGE_PORT_ID", iface_2_bridge_port_id["{}".format(interface)])])
+        assert ok, str(extra)
+
+        # Shutdown the interface
+        dvs.runcmd("config interface shutdown {}".format(interface))
+        time.sleep(10)
+
+        # Check that the FDB entry deleted from ASIC DB
+        ok, extra = dvs.is_fdb_entry_exists(dvs.adb, "ASIC_STATE:SAI_OBJECT_TYPE_FDB_ENTRY",
+                        [("mac", "{}".format(mac_addr)), ("bvid", bvid)], [])
+        assert ok == False, "FDB entry still exist in ASIC_DB"
+
+    def test_PortShutdownVlanRifIpv4(self, dvs, testlog):
+        vlan_id = "2"
+        vlan_interface = "Vlan{}".format(vlan_id)
+        interface = "Ethernet0"
+        mac_addr = "52:54:00:25:06:E9"
+        ipv4_addr = "192.168.10.1/24"
+
+        dvs.setup_db()
+        dvs.runcmd("sonic-clear fdb all")
+        time.sleep(2)
+
+        # Create vlan
+        dvs.create_vlan(vlan_id)
+        time.sleep(1)
+
+        # Get bvid from vlanid
+        ok, bvid = dvs.get_vlan_oid(dvs.adb, vlan_id)
+        assert ok, bvid
+
+        # Create vlan member, assign ip to vlan
+        dvs.create_vlan_member(vlan_id, interface)
+        dvs.add_ip_address(vlan_interface, ipv4_addr)
+        time.sleep(1)
+
+        # Create a FDB entry in Application DB
+        create_entry_pst(
+            dvs.pdb,
+            "FDB_TABLE", "{}:52-54-00-25-06-E9".format(vlan_interface),
+            [
+                ("port", "{}".format(interface)),
+                ("type", "dynamic"),
+            ]
+        )
+
+        # Get mapping between the interface name and its bridge port_id
+        iface_2_bridge_port_id = dvs.get_map_iface_bridge_port_id(dvs.adb)
+
+        # Check that the FDB entry was inserted into ASIC DB
+        ok, extra = dvs.is_fdb_entry_exists(dvs.adb, "ASIC_STATE:SAI_OBJECT_TYPE_FDB_ENTRY",
+                        [("mac", "{}".format(mac_addr)), ("bvid", bvid)],
+                        [("SAI_FDB_ENTRY_ATTR_TYPE", "SAI_FDB_ENTRY_TYPE_DYNAMIC"),
+                         ("SAI_FDB_ENTRY_ATTR_BRIDGE_PORT_ID", iface_2_bridge_port_id["{}".format(interface)])])
+        assert ok, str(extra)
+
+        # Shutdown the interface
+        dvs.runcmd("config interface shutdown {}".format(interface))
+        time.sleep(10)
+
+        # Check that the FDB entry deleted from ASIC DB
+        ok, extra = dvs.is_fdb_entry_exists(dvs.adb, "ASIC_STATE:SAI_OBJECT_TYPE_FDB_ENTRY",
+                        [("mac", "{}".format(mac_addr)), ("bvid", bvid)], [])
+        assert ok == False, "FDB entry still exist in ASIC_DB"
 
 # Add Dummy always-pass test at end as workaroud
 # for issue when Flaky fail on final test it invokes module tear-down before retrying
